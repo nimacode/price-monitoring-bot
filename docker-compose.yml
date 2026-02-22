@@ -21,7 +21,6 @@ services:
     env_file:
       - .env
     environment:
-      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/${MONGO_DB}?authSource=admin
       LOG_FILE: /app/logs/bot.log
     volumes:
       - ./logs:/app/logs
