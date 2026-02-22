@@ -1,0 +1,6 @@
+.env
+bin/
+logs/
+cmd/update_selector/
+cmd/update_multiplier/
+*.log
