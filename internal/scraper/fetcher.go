@@ -1,13 +1,17 @@
 package scraper
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"price-monitoring-bot/internal/cache"
+	"price-monitoring-bot/internal/config"
 	"price-monitoring-bot/internal/models"
 
 	"github.com/antchfx/htmlquery"
@@ -16,15 +20,37 @@ import (
 
 type Fetcher struct {
 	client *resty.Client
+	cache  *cache.Cache
+	cfg    *config.Config
 }
 
-func NewFetcher() *Fetcher {
+func NewFetcher(cfg *config.Config) *Fetcher {
+	transport := &http.Transport{
+		DisableKeepAlives:   true,
+		TLSHandshakeTimeout: 10 * time.Second,
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+	}
+
+	client := resty.New().
+		SetTransport(transport).
+		SetTimeout(cfg.ScraperTimeout).
+		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").
+		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
+		SetHeader("Accept-Language", "fa-IR,fa;q=0.9,en;q=0.8").
+		SetHeader("Accept-Encoding", "gzip, deflate").
+		SetRetryCount(cfg.ScraperRetryCount).
+		SetRetryWaitTime(cfg.ScraperRetryWait).
+		SetRetryMaxWaitTime(cfg.ScraperRetryWait * time.Duration(cfg.ScraperRetryCount)).
+		AddRetryCondition(func(r *resty.Response, err error) bool {
+			return err != nil || r.StatusCode() >= 500
+		})
+
 	return &Fetcher{
-		client: resty.New().
-			SetTimeout(15 * time.Second).
-			SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
-			SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
-			SetHeader("Accept-Language", "fa-IR,fa;q=0.9,en;q=0.8"),
+		client: client,
+		cache:  cache.New(),
+		cfg:    cfg,
 	}
 }
 
@@ -34,50 +60,78 @@ type FetchResult struct {
 	Error    error
 }
 
-func (f *Fetcher) FetchFromAPI(url, jsonPath string) (float64, error) {
-	resp, err := f.client.R().Get(url)
+func (f *Fetcher) FetchFromAPI(ctx context.Context, url, jsonPath string) (float64, error) {
+	cacheKey := fmt.Sprintf("api:%s:%s", url, jsonPath)
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		if v, ok := cached.(float64); ok {
+			return v, nil
+		}
+	}
+
+	resp, err := f.client.R().SetContext(ctx).Get(url)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("fetch error: %w (url: %s)", err, url)
+	}
+
+	if resp.StatusCode() != 200 {
+		return 0, fmt.Errorf("http status %d (url: %s)", resp.StatusCode(), url)
 	}
 
 	var data interface{}
 	if err := json.Unmarshal(resp.Body(), &data); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("json parse error: %w (url: %s)", err, url)
 	}
 
 	value, err := getJSONValue(data, jsonPath)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("json path error: %w (path: %s, url: %s)", err, jsonPath, url)
 	}
 
+	var result float64
 	switch v := value.(type) {
 	case float64:
-		return v, nil
+		result = v
 	case string:
-		fv, err := parsePrice(v)
+		result, err = parsePrice(v)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("price parse error: %w (value: %s, url: %s)", err, v, url)
 		}
-		return fv, nil
 	default:
-		return 0, fmt.Errorf("unexpected type for price value")
+		return 0, fmt.Errorf("unexpected type %T for price value (url: %s)", value, url)
 	}
+
+	f.cache.Set(cacheKey, result, 10*time.Second)
+	return result, nil
 }
 
-func (f *Fetcher) FetchFromXPath(url, xpathExpr string) (float64, error) {
-	resp, err := f.client.R().Get(url)
+func (f *Fetcher) FetchFromXPath(ctx context.Context, url, xpathExpr string) (float64, error) {
+	cacheKey := fmt.Sprintf("xpath:%s:%s", url, xpathExpr)
+	if cached, ok := f.cache.Get(cacheKey); ok {
+		if v, ok := cached.(float64); ok {
+			return v, nil
+		}
+	}
+
+	resp, err := f.client.R().SetContext(ctx).Get(url)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("fetch error: %w (url: %s)", err, url)
+	}
+
+	if resp.StatusCode() != 200 {
+		return 0, fmt.Errorf("http status %d (url: %s)", resp.StatusCode(), url)
 	}
 
 	doc, err := htmlquery.Parse(strings.NewReader(string(resp.Body())))
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse HTML: %w", err)
+		return 0, fmt.Errorf("html parse error: %w (url: %s)", err, url)
 	}
 
-	node := htmlquery.FindOne(doc, xpathExpr)
+	node, err := htmlquery.Query(doc, xpathExpr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid xpath %q: %w (url: %s)", xpathExpr, err, url)
+	}
 	if node == nil {
-		return 0, fmt.Errorf("no elements found with selector: %s", xpathExpr)
+		return 0, fmt.Errorf("element not found with xpath: %s (url: %s)", xpathExpr, url)
 	}
 
 	text := strings.TrimSpace(htmlquery.InnerText(node))
@@ -85,19 +139,76 @@ func (f *Fetcher) FetchFromXPath(url, xpathExpr string) (float64, error) {
 
 	value, err := strconv.ParseFloat(text, 64)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse price %q: %w", text, err)
+		return 0, fmt.Errorf("price parse error: %w (text: %q, url: %s)", err, text, url)
 	}
 
+	f.cache.Set(cacheKey, value, 10*time.Second)
 	return value, nil
 }
 
-// normalizePriceText converts Persian digits to English and strips non-numeric characters.
+func (f *Fetcher) Fetch(ctx context.Context, source models.Source) (float64, error) {
+	var value float64
+	var err error
+
+	switch source.FetchType {
+	case "api":
+		value, err = f.FetchFromAPI(ctx, source.URL, source.Selector)
+	case "xpath":
+		value, err = f.FetchFromXPath(ctx, source.URL, source.Selector)
+	default:
+		err = fmt.Errorf("unknown fetch type: %s", source.FetchType)
+	}
+
+	if err == nil && source.Multiplier > 0 {
+		value = value * float64(source.Multiplier)
+	}
+
+	return value, err
+}
+
+func (f *Fetcher) FetchFromSources(ctx context.Context, sources []models.Source) []FetchResult {
+	results := make([]FetchResult, len(sources))
+	var wg sync.WaitGroup
+
+	semaphore := make(chan struct{}, f.cfg.ScraperConcurrency)
+
+	for i, source := range sources {
+		wg.Add(1)
+		go func(idx int, s models.Source) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results[idx] = FetchResult{
+						SourceID: s.ID.Hex(),
+						Error:    fmt.Errorf("panic: %v", r),
+					}
+				}
+			}()
+
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			fetchCtx, cancel := context.WithTimeout(ctx, f.cfg.ScraperTimeout)
+			defer cancel()
+
+			value, err := f.Fetch(fetchCtx, s)
+			results[idx] = FetchResult{
+				SourceID: s.ID.Hex(),
+				Value:    value,
+				Error:    err,
+			}
+		}(i, source)
+	}
+
+	wg.Wait()
+	return results
+}
+
 func normalizePriceText(text string) string {
 	persian := []string{"۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"}
 	for i, p := range persian {
 		text = strings.ReplaceAll(text, p, strconv.Itoa(i))
 	}
-	// Remove everything except digits and dot
 	var b strings.Builder
 	for _, r := range text {
 		if (r >= '0' && r <= '9') || r == '.' {
@@ -105,52 +216,6 @@ func normalizePriceText(text string) string {
 		}
 	}
 	return b.String()
-}
-
-func (f *Fetcher) FetchFromSources(sources []models.Source) []FetchResult {
-	var wg sync.WaitGroup
-	results := make([]FetchResult, len(sources))
-	resultChan := make(chan FetchResult, len(sources))
-
-	for _, source := range sources {
-		wg.Add(1)
-		go func(s models.Source) {
-			defer wg.Done()
-			var value float64
-			var err error
-
-			if s.FetchType == "api" {
-				value, err = f.FetchFromAPI(s.URL, s.Selector)
-			} else if s.FetchType == "xpath" {
-				value, err = f.FetchFromXPath(s.URL, s.Selector)
-			} else {
-				err = fmt.Errorf("unknown fetch type: %s", s.FetchType)
-			}
-
-			if err == nil && s.Multiplier > 0 {
-				value = value * float64(s.Multiplier)
-			}
-
-			resultChan <- FetchResult{
-				SourceID: s.ID.Hex(),
-				Value:    value,
-				Error:    err,
-			}
-		}(source)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	i := 0
-	for result := range resultChan {
-		results[i] = result
-		i++
-	}
-
-	return results
 }
 
 func getJSONValue(data interface{}, path string) (interface{}, error) {
@@ -191,6 +256,5 @@ func parsePrice(text string) (float64, error) {
 	text = strings.TrimSpace(text)
 	text = strings.ReplaceAll(text, ",", "")
 	text = strings.ReplaceAll(text, " ", "")
-
 	return strconv.ParseFloat(text, 64)
 }

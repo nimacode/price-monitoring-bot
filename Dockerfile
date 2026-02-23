@@ -1,5 +1,6 @@
-# --- Build stage ---
-FROM golang:1.25-alpine AS builder
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /app
 
@@ -7,17 +8,22 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o bin/bot ./cmd/bot/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /bot ./cmd/bot/main.go
 
-# --- Production stage ---
 FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata && \
+    adduser -D -g '' appuser
 
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /bot /app/bot
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-COPY --from=builder /app/bin/bot ./bot
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app
 
-CMD ["./bot"]
+USER appuser
+
+ENV TZ=Asia/Tehran
 
 CMD ["./bot"]

@@ -2,9 +2,10 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"net/url"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -13,30 +14,46 @@ type Config struct {
 	MongoURI      string
 	DBName        string
 	TelegramToken string
-	ChannelID     string64
-	AdminID       string64
-}
+	ChannelID     int64
+	AdminID       int64
+	LogFile       string
+	Debug         bool
 
-type string64 int64
+	ScraperConcurrency   int
+	ScraperTimeout       time.Duration
+	ScraperRetryCount    int
+	ScraperRetryWait     time.Duration
+	SchedulerFetchCron   string
+	SchedulerPostCron    string
+	AlertThresholdGold   float64
+	AlertThresholdCrypto float64
+	AlertThresholdFiat   float64
+}
 
 func Load() *Config {
-	if err := godotenv.Load(); err != nil {
-		log.Println("Warning: .env file not found, using environment variables")
-	}
-
-	mongoURI := buildMongoURI()
+	godotenv.Load()
 
 	return &Config{
-		MongoURI:      mongoURI,
+		MongoURI:      buildMongoURI(),
 		DBName:        getEnv("DB_NAME", "price_monitor"),
 		TelegramToken: getEnv("TELEGRAM_TOKEN", ""),
-		ChannelID:     string64(getEnvInt("CHANNEL_ID", 0)),
-		AdminID:       string64(getEnvInt("ADMIN_ID", 0)),
+		ChannelID:     getEnvInt("CHANNEL_ID", 0),
+		AdminID:       getEnvInt("ADMIN_ID", 0),
+		LogFile:       getEnv("LOG_FILE", "logs/bot.log"),
+		Debug:         getEnvBool("DEBUG", false),
+
+		ScraperConcurrency:   int(getEnvInt("SCRAPER_CONCURRENCY", 10)),
+		ScraperTimeout:       getEnvDuration("SCRAPER_TIMEOUT", 20*time.Second),
+		ScraperRetryCount:    int(getEnvInt("SCRAPER_RETRY_COUNT", 3)),
+		ScraperRetryWait:     getEnvDuration("SCRAPER_RETRY_WAIT", 2*time.Second),
+		SchedulerFetchCron:   getEnv("SCHEDULER_FETCH_CRON", "0 */10 * * * *"),
+		SchedulerPostCron:    getEnv("SCHEDULER_POST_CRON", "0 */30 * * * *"),
+		AlertThresholdGold:   getEnvFloat("ALERT_THRESHOLD_GOLD", 0.01),
+		AlertThresholdCrypto: getEnvFloat("ALERT_THRESHOLD_CRYPTO", 0.03),
+		AlertThresholdFiat:   getEnvFloat("ALERT_THRESHOLD_FIAT", 0.01),
 	}
 }
 
-// buildMongoURI constructs a properly URL-encoded MongoDB connection URI.
-// If MONGO_USER and MONGO_PASSWORD are set, they take priority over MONGO_URI.
 func buildMongoURI() string {
 	user := os.Getenv("MONGO_USER")
 	pass := os.Getenv("MONGO_PASSWORD")
@@ -62,14 +79,34 @@ func getEnv(key, defaultValue string) string {
 
 func getEnvInt(key string, defaultValue int) int64 {
 	if value := os.Getenv(key); value != "" {
-		var result int64
-		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
-			return result
+		if i, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return i
 		}
 	}
 	return int64(defaultValue)
 }
 
-func (s string64) Int64() int64 {
-	return int64(s)
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		return value == "true" || value == "1"
+	}
+	return defaultValue
+}
+
+func getEnvFloat(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			return f
+		}
+	}
+	return defaultValue
+}
+
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if d, err := time.ParseDuration(value); err == nil {
+			return d
+		}
+	}
+	return defaultValue
 }

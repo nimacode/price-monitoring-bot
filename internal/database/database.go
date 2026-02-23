@@ -2,8 +2,10 @@ package database
 
 import (
 	"context"
-	"log"
 	"time"
+
+	"price-monitoring-bot/internal/config"
+	"price-monitoring-bot/internal/logger"
 
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -12,13 +14,21 @@ import (
 type MongoDB struct {
 	Client   *mongo.Client
 	Database *mongo.Database
+	cfg      *config.Config
 }
 
-func NewMongoDB(uri, dbName string) (*MongoDB, error) {
+func NewMongoDB(cfg *config.Config) (*MongoDB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	clientOpts := options.Client().
+		ApplyURI(cfg.MongoURI).
+		SetMaxPoolSize(100).
+		SetMinPoolSize(10).
+		SetMaxConnIdleTime(30 * time.Second).
+		SetConnectTimeout(10 * time.Second)
+
+	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -27,11 +37,12 @@ func NewMongoDB(uri, dbName string) (*MongoDB, error) {
 		return nil, err
 	}
 
-	log.Println("Connected to MongoDB")
+	logger.Info("Connected to MongoDB")
 
 	return &MongoDB{
 		Client:   client,
-		Database: client.Database(dbName),
+		Database: client.Database(cfg.DBName),
+		cfg:      cfg,
 	}, nil
 }
 
@@ -43,4 +54,8 @@ func (m *MongoDB) Close() error {
 
 func (m *MongoDB) Collection(name string) *mongo.Collection {
 	return m.Database.Collection(name)
+}
+
+func (m *MongoDB) WithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), timeout)
 }

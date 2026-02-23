@@ -1,6 +1,43 @@
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Binaries
 bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Logs
 logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go workspace file
+go.work
+
+# Temporary cmd tools (keep only bot)
 cmd/update_selector/
 cmd/update_multiplier/
-*.log
+
+# Build
+dist/

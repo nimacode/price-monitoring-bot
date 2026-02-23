@@ -1,8 +1,7 @@
 package main
 
 import (
-	"io"
-	"log"
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,58 +9,58 @@ import (
 	"price-monitoring-bot/internal/bot"
 	"price-monitoring-bot/internal/config"
 	"price-monitoring-bot/internal/database"
+	"price-monitoring-bot/internal/logger"
 	"price-monitoring-bot/internal/scheduler"
 	"price-monitoring-bot/internal/scraper"
 )
 
 func main() {
-	logPath := os.Getenv("LOG_FILE")
-	if logPath == "" {
-		logPath = "logs/bot.log"
-	}
-
-	if err := os.MkdirAll("logs", 0755); err == nil {
-		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-			log.SetOutput(io.MultiWriter(os.Stdout, f))
-		}
-	}
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-
-	log.Println("Starting Price Monitoring Bot...")
-
 	cfg := config.Load()
 
+	log := logger.Init(cfg.LogFile, cfg.Debug)
+
+	log.Info("Starting Price Monitoring Bot...")
+
 	if cfg.TelegramToken == "" {
-		log.Fatal("TELEGRAM_TOKEN environment variable is required")
+		log.Error("TELEGRAM_TOKEN environment variable is required")
+		os.Exit(1)
 	}
 
-	if cfg.ChannelID.Int64() == 0 {
-		log.Fatal("CHANNEL_ID environment variable is required")
+	if cfg.ChannelID == 0 {
+		log.Error("CHANNEL_ID environment variable is required")
+		os.Exit(1)
 	}
 
-	if cfg.AdminID.Int64() == 0 {
-		log.Fatal("ADMIN_ID environment variable is required")
+	if cfg.AdminID == 0 {
+		log.Error("ADMIN_ID environment variable is required")
+		os.Exit(1)
 	}
 
-	mongoDB, err := database.NewMongoDB(cfg.MongoURI, cfg.DBName)
+	mongoDB, err := database.NewMongoDB(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+		log.Error("Failed to connect to MongoDB: %v", err)
+		os.Exit(1)
 	}
 	defer mongoDB.Close()
 
+	ctx := context.Background()
 	repo := database.NewRepository(mongoDB)
-
-	fetcher := scraper.NewFetcher()
-
-	telegramBot, err := bot.NewBot(cfg.TelegramToken, repo, nil, cfg.AdminID.Int64())
-	if err != nil {
-		log.Fatalf("Failed to create Telegram bot: %v", err)
+	if err := repo.CreateIndexes(ctx); err != nil {
+		log.Error("Failed to create indexes: %v", err)
 	}
 
-	scheduler := scheduler.NewScheduler(repo, fetcher, telegramBot.API, cfg.ChannelID.Int64())
-	bot.SetScheduler(telegramBot, scheduler)
+	fetcher := scraper.NewFetcher(cfg)
 
-	scheduler.Start()
+	telegramBot, err := bot.NewBot(cfg, repo, nil)
+	if err != nil {
+		log.Error("Failed to create Telegram bot: %v", err)
+		os.Exit(1)
+	}
+
+	sched := scheduler.NewScheduler(cfg, repo, fetcher, telegramBot.API, cfg.ChannelID)
+	bot.SetScheduler(telegramBot, sched)
+
+	sched.Start()
 
 	go telegramBot.Start()
 
@@ -70,7 +69,7 @@ func main() {
 
 	<-sigChan
 
-	log.Println("Shutting down gracefully...")
-	scheduler.Stop()
-	log.Println("Bot stopped.")
+	log.Info("Shutting down gracefully...")
+	sched.Stop()
+	log.Info("Bot stopped.")
 }
