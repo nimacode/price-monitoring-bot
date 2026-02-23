@@ -37,9 +37,10 @@ func NewFetcher(cfg *config.Config) *Fetcher {
 		SetTransport(transport).
 		SetTimeout(cfg.ScraperTimeout).
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").
-		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
+		SetHeader("Accept", "*/*").
 		SetHeader("Accept-Language", "fa-IR,fa;q=0.9,en;q=0.8").
 		SetHeader("Accept-Encoding", "gzip, deflate").
+		SetHeader("Connection", "keep-alive").
 		SetRetryCount(cfg.ScraperRetryCount).
 		SetRetryWaitTime(cfg.ScraperRetryWait).
 		SetRetryMaxWaitTime(cfg.ScraperRetryWait * time.Duration(cfg.ScraperRetryCount)).
@@ -68,7 +69,10 @@ func (f *Fetcher) FetchFromAPI(ctx context.Context, url, jsonPath string) (float
 		}
 	}
 
-	resp, err := f.client.R().SetContext(ctx).Get(url)
+	resp, err := f.client.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/json").
+		Get(url)
 	if err != nil {
 		return 0, fmt.Errorf("fetch error: %w (url: %s)", err, url)
 	}

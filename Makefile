@@ -1,7 +1,7 @@
 .PHONY: build run test clean docker-build docker-up docker-down fmt lint
 
 BINARY_NAME=bot
-GO=go
+GO=/usr/local/go/bin/go
 GOFLAGS=-v
 
 build:
@@ -22,28 +22,27 @@ clean:
 
 fmt:
 	$(GO) fmt ./...
-	gofmt -s -w .
 
 lint:
 	golangci-lint run ./...
 
 docker-build:
-	docker compose build
+	docker-compose build
 
 docker-up:
-	docker compose up -d
+	docker-compose up -d
 
 docker-down:
-	docker compose down
+	docker-compose down
 
 docker-logs:
-	docker compose logs -f bot
+	docker-compose logs -f bot
 
 docker-restart:
-	docker compose restart bot
+	docker-compose restart bot
 
 mongo-shell:
-	docker compose exec mongo mongosh -u $(MONGO_USER) -p $(MONGO_PASSWORD) price_monitor
+	docker-compose exec mongo mongosh -u $(MONGO_USER) -p $(MONGO_PASSWORD) price_monitor
 
 install:
 	$(GO) mod download
