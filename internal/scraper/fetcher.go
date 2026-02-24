@@ -223,33 +223,71 @@ func normalizePriceText(text string) string {
 }
 
 func getJSONValue(data interface{}, path string) (interface{}, error) {
-	parts := strings.Split(path, ".")
 	current := data
 
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+	for len(path) > 0 {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			break
 		}
 
-		switch v := current.(type) {
-		case map[string]interface{}:
-			if val, ok := v[part]; ok {
-				current = val
-			} else {
-				return nil, fmt.Errorf("key not found: %s", part)
+		if strings.HasPrefix(path, "[") {
+			closeBracket := strings.Index(path, "]")
+			if closeBracket == -1 {
+				return nil, fmt.Errorf("unclosed bracket in path")
 			}
-		case []interface{}:
-			index, err := strconv.Atoi(part)
+			indexStr := path[1:closeBracket]
+			index, err := strconv.Atoi(indexStr)
 			if err != nil {
-				return nil, fmt.Errorf("invalid array index: %s", part)
+				return nil, fmt.Errorf("invalid array index: %s", indexStr)
 			}
-			if index < 0 || index >= len(v) {
+
+			arr, ok := current.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("expected array at index [%s]", indexStr)
+			}
+			if index < 0 || index >= len(arr) {
 				return nil, fmt.Errorf("array index out of range: %d", index)
 			}
-			current = v[index]
-		default:
-			return nil, fmt.Errorf("cannot traverse into non-container type")
+			current = arr[index]
+			path = strings.TrimPrefix(path[closeBracket+1:], ".")
+		} else {
+			var key string
+			dotIdx := strings.Index(path, ".")
+			bracketIdx := strings.Index(path, "[")
+
+			if dotIdx == -1 && bracketIdx == -1 {
+				key = path
+				path = ""
+			} else if dotIdx == -1 {
+				key = path[:bracketIdx]
+				path = path[bracketIdx:]
+			} else if bracketIdx == -1 {
+				key = path[:dotIdx]
+				path = path[dotIdx+1:]
+			} else {
+				if dotIdx < bracketIdx {
+					key = path[:dotIdx]
+					path = path[dotIdx+1:]
+				} else {
+					key = path[:bracketIdx]
+					path = path[bracketIdx:]
+				}
+			}
+
+			if key == "" {
+				continue
+			}
+
+			m, ok := current.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("key not found: %s", key)
+			}
+			if val, exists := m[key]; exists {
+				current = val
+			} else {
+				return nil, fmt.Errorf("key not found: %s", key)
+			}
 		}
 	}
 
